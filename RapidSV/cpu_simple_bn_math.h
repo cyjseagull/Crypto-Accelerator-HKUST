@@ -1,3 +1,6 @@
+#ifndef _GSV_CPU_SIMPLE_BN_MATH_H_
+#define _GSV_CPU_SIMPLE_BN_MATH_H_
+
 /***
 
 Copyright (c) 2018-2019, NVIDIA CORPORATION.  All rights reserved.
@@ -22,6 +25,26 @@ IN THE SOFTWARE.
 
 ***/
 
-#include "cpu_support.h"
-#include "cpu_simple_bn_math.h"
-#include "gpu_support.h"
+void add_words(uint32_t *r, uint32_t *x, uint32_t *y, uint32_t count) {
+  int     index;
+  int64_t sum=0;
+
+  for(index=0;index<count;index++) {
+    sum=sum+x[index]+y[index];
+    r[index]=sum;
+    sum=sum>>32;
+  }
+}
+
+void sub_words(uint32_t *r, uint32_t *x, uint32_t *y, uint32_t count) {
+  int     index;
+  int64_t sum=0;
+
+  for(index=0;index<count;index++) {
+    sum=sum+x[index]-y[index];
+    r[index]=sum;
+    sum=sum>>32;
+  }
+}
+
+#endif // _GSV_CPU_SIMPLE_BN_MATH_H_
