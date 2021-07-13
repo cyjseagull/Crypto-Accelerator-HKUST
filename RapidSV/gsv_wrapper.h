@@ -13,11 +13,19 @@
 #define GSV_BITS 512
 #endif
 
-// #define GSV_KNOWN_PKEY
+// #define GSV_KNOWN_PKEY  // speed up verification if public key is known
 
 typedef struct {
     uint32_t _limbs[(GSV_BITS + 31) / 32];
 } gsv_mem_t;
+
+typedef struct {
+    gsv_mem_t e;         // digest
+    gsv_mem_t priv_key;  // private key
+    gsv_mem_t k;         // random number, no need to fill in
+    gsv_mem_t r;         // sig->r, return value
+    gsv_mem_t s;         // sig->s, return value
+} gsv_sign_t;
 
 typedef struct {
     gsv_mem_t r;  // sig->r
@@ -27,12 +35,18 @@ typedef struct {
     gsv_mem_t key_x;  // public key
     gsv_mem_t key_y;  // public key
 #endif
-} sig_t;
+} gsv_verify_t;
 
-void GSV_init(int device_id = 0);
+void GSV_sign_init(int device_id = 0);
 
-void GSV_verify(int count, sig_t *sig, int *results);
+void GSV_sign_exec(int count, gsv_sign_t *sig);
 
-void GSV_close();
+void GSV_sign_close();
+
+void GSV_verify_init(int device_id = 0);
+
+void GSV_verify_exec(int count, gsv_verify_t *sig, int *results);
+
+void GSV_verify_close();
 
 #endif  // _GSV_WRAPPER_H_
