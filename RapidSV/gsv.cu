@@ -11,13 +11,13 @@
 #include "gsv_wrapper.h"
 #include "support.h"
 
-#define NGPUS 2
+#define MAX_NGPU 8
 
 #define GSV_SM2  // enable optimization for SM2 (a=-3)
 
 #define GSV_TABLE_SIZE 512  // size of precomputed table
 
-#define GSV_MAX_INS 1048576  // maximum number of instants in a single kernel
+#define GSV_MAX_INS 8388608  // maximum number of instants in a single kernel
 
 __constant__ cgbn_mem_t<GSV_BITS> d_mul_table[GSV_TABLE_SIZE];
 #ifdef GSV_KNOWN_PKEY
@@ -66,7 +66,9 @@ typedef struct {
 typedef struct {
     cgbn_mem_t<GSV_BITS> order;  // group order
     cgbn_mem_t<GSV_BITS> field;  // prime p
+#ifndef GSV_SM2
     cgbn_mem_t<GSV_BITS> g_a;
+#endif
 } ec_t;
 
 template <class params>
@@ -132,8 +134,13 @@ class gsv_t {
     // Intel IPP's faster point doubling
     // Complexity: 6S, 4M, 2A, 3D, 3L, 1R
     // SM2:        4S, 4M, 2A, 4D, 3L, 1R
+#ifndef GSV_SM2
     __device__ __forceinline__ void point_dbl_ipp(bn_t &r_x, bn_t &r_y, bn_t &r_z, const bn_t &a_x, const bn_t &a_y,
                                                   const bn_t &a_z, const bn_t &field, const bn_t &g_a, const uint32_t np0) {
+#else
+    __device__ __forceinline__ void point_dbl_ipp(bn_t &r_x, bn_t &r_y, bn_t &r_z, const bn_t &a_x, const bn_t &a_y,
+                                                  const bn_t &a_z, const bn_t &field, const uint32_t np0) {
+#endif
         if (_env.equals_ui32(a_z, 0)) {
             _env.set_ui32(r_z, 0);
             return;
@@ -192,12 +199,22 @@ class gsv_t {
 
     // Intel IPP's faster point addition
     // Complexity: 4S, 12M, 0A, 6D, 1L
+#ifndef GSV_SM2
     __device__ __forceinline__ void point_add_ipp(bn_t &r_x, bn_t &r_y, bn_t &r_z, const bn_t &a_x, const bn_t &a_y,
                                                   const bn_t &a_z, const bn_t &b_x, const bn_t &b_y, const bn_t &b_z,
                                                   const bn_t &field, const bn_t &g_a, const uint32_t np0) {
+#else
+    __device__ __forceinline__ void point_add_ipp(bn_t &r_x, bn_t &r_y, bn_t &r_z, const bn_t &a_x, const bn_t &a_y,
+                                                  const bn_t &a_z, const bn_t &b_x, const bn_t &b_y, const bn_t &b_z,
+                                                  const bn_t &field, const uint32_t np0) {
+#endif
         if (_env.compare(a_x, b_x) == 0 && _env.compare(a_y, b_y) == 0 && _env.compare(a_z, b_z) == 0) {
             // if (threadIdx.x == 0) printf("DOUBLE\n");
+#ifndef GSV_SM2
             point_dbl_ipp(r_x, r_y, r_z, a_x, a_y, a_z, field, g_a, np0);
+#else
+            point_dbl_ipp(r_x, r_y, r_z, a_x, a_y, a_z, field, np0);
+#endif
             return;
         }
         if (_env.equals_ui32(a_z, 0)) {
@@ -233,7 +250,11 @@ class gsv_t {
         if (_env.equals_ui32(h, 0)) {
             if (_env.equals_ui32(r, 0)) {
                 // if (threadIdx.x == 0) printf("EQUAL\n");
+#ifndef GSV_SM2
                 point_dbl_ipp(r_x, r_y, r_z, a_x, a_y, a_z, field, g_a, np0);
+#else
+                point_dbl_ipp(r_x, r_y, r_z, a_x, a_y, a_z, field, np0);
+#endif
                 return;
             } else {
                 _env.set_ui32(r_z, 0);
@@ -260,9 +281,14 @@ class gsv_t {
 
     // Non-adjacent form (NAF)
     // Expected complexity: n * D + n/3 * A
+#ifndef GSV_SM2
     __device__ __forceinline__ void point_mult_naf(bn_t &r_x, bn_t &r_y, bn_t &r_z, const bn_t &p_x, const bn_t &p_y,
                                                    const bn_t &p_z, const bn_t &d, const bn_t &field, const bn_t &g_a,
                                                    const uint32_t np0) {
+#else
+    __device__ __forceinline__ void point_mult_naf(bn_t &r_x, bn_t &r_y, bn_t &r_z, const bn_t &p_x, const bn_t &p_y,
+                                                   const bn_t &p_z, const bn_t &d, const bn_t &field, const uint32_t np0) {
+#endif
         bn_t q_x, q_y, q_z;
         bn_t k, m_y;
         int8_t naf[257];
@@ -292,6 +318,7 @@ class gsv_t {
             ++bits;
         }
 
+#ifndef GSV_SM2
         for (int i = bits - 1; i >= 0; i--) {
             point_dbl_ipp(r_x, r_y, r_z, r_x, r_y, r_z, field, g_a, np0);
             if (naf[i] == 1) {
@@ -300,13 +327,28 @@ class gsv_t {
                 point_add_ipp(r_x, r_y, r_z, r_x, r_y, r_z, q_x, m_y, q_z, field, g_a, np0);
             }
         }
+#else
+        for (int i = bits - 1; i >= 0; i--) {
+            point_dbl_ipp(r_x, r_y, r_z, r_x, r_y, r_z, field, np0);
+            if (naf[i] == 1) {
+                point_add_ipp(r_x, r_y, r_z, r_x, r_y, r_z, q_x, q_y, q_z, field, np0);
+            } else if (naf[i] == -1) {
+                point_add_ipp(r_x, r_y, r_z, r_x, r_y, r_z, q_x, m_y, q_z, field, np0);
+            }
+        }
+#endif
     }
 
     // Fixed-point multiplication, can be applied for the generator point
     // Expected complexity: n/2 * A
     // Table size: 32 KB (512 bn)
+#ifndef GSV_SM2
     __device__ __forceinline__ void fixed_point_mult(bn_t &r_x, bn_t &r_y, bn_t &r_z, bn_t &k, const bn_t &field,
                                                      const bn_t &g_a, const uint32_t np0) {
+#else
+    __device__ __forceinline__ void fixed_point_mult(bn_t &r_x, bn_t &r_y, bn_t &r_z, bn_t &k, const bn_t &field,
+                                                     const uint32_t np0) {
+#endif
         int i = 0;
         bn_t q_x, q_y, one;
 
@@ -317,7 +359,11 @@ class gsv_t {
             if (_env.ctz(k) == 0) {  // k_i = 1
                 _env.load(q_x, &d_mul_table[i * 2]);
                 _env.load(q_y, &d_mul_table[i * 2 + 1]);
+#ifndef GSV_SM2
                 point_add_ipp(r_x, r_y, r_z, r_x, r_y, r_z, q_x, q_y, one, field, g_a, np0);
+#else
+                point_add_ipp(r_x, r_y, r_z, r_x, r_y, r_z, q_x, q_y, one, field, np0);
+#endif
             }
             _env.shift_right(k, k, 1);
             i++;
@@ -325,8 +371,13 @@ class gsv_t {
     }
 
 #ifdef GSV_KNOWN_PKEY
+#ifndef GSV_SM2
     __device__ __forceinline__ void fixed_point_mult2(bn_t &r_x, bn_t &r_y, bn_t &r_z, const bn_t &d, const bn_t &field,
                                                       const bn_t &g_a, const uint32_t np0) {
+#else
+    __device__ __forceinline__ void fixed_point_mult2(bn_t &r_x, bn_t &r_y, bn_t &r_z, const bn_t &d, const bn_t &field,
+                                                      const uint32_t np0) {
+#endif
         int i = 0;
         bn_t k, q_x, q_y, one;
 
@@ -338,7 +389,11 @@ class gsv_t {
             if (_env.ctz(k) == 0) {  // k_i = 1
                 _env.load(q_x, &d_mul_table2[i * 2]);
                 _env.load(q_y, &d_mul_table2[i * 2 + 1]);
+#ifndef GSV_SM2
                 point_add_ipp(r_x, r_y, r_z, r_x, r_y, r_z, q_x, q_y, one, field, g_a, np0);
+#else
+                point_add_ipp(r_x, r_y, r_z, r_x, r_y, r_z, q_x, q_y, one, field, np0);
+#endif
             }
             _env.shift_right(k, k, 1);
             i++;
@@ -378,8 +433,13 @@ class gsv_t {
      * A6: calculate s=((1+dA)^(-1)*(k-r*dA)) modn, return to A3 if s=0
      * A7: the digital signature of M is (r, s)
      */
+#ifndef GSV_SM2
     __device__ __forceinline__ int32_t sig_sign(bn_t &r, bn_t &s, const bn_t &e, bn_t &priv_key, bn_t &k, const bn_t &order,
                                                 const bn_t &field, bn_t &g_a) {
+#else
+    __device__ __forceinline__ int32_t sig_sign(bn_t &r, bn_t &s, const bn_t &e, bn_t &priv_key, bn_t &k, const bn_t &order,
+                                                const bn_t &field) {
+#endif
         bn_t x1, y1, z1, tmp;
         uint32_t np0;
 
@@ -388,9 +448,13 @@ class gsv_t {
         _env.set_ui32(z1, 1);
         np0 = _env.bn2mont(z1, z1, field);
         _env.set(tmp, k);
+#ifndef GSV_SM2
         _env.bn2mont(g_a, g_a, field);
 
         fixed_point_mult(x1, y1, z1, tmp, field, g_a, np0);
+#else
+        fixed_point_mult(x1, y1, z1, tmp, field, np0);
+#endif
         conv_affine_x(x1, x1, z1, field, np0);
 
         mod_add(r, e, x1, order);
@@ -433,11 +497,20 @@ class gsv_t {
      * B7: calculate R=(e'+x1') modn, verification pass if yes, otherwise failed
      */
 #ifndef GSV_KNOWN_PKEY
+#ifndef GSV_SM2
     __device__ __forceinline__ int32_t sig_verify(const bn_t &r, bn_t &s, const bn_t &e, const bn_t &key_x, const bn_t &key_y,
                                                   const bn_t &order, const bn_t &field, bn_t &g_a)
 #else
+    __device__ __forceinline__ int32_t sig_verify(const bn_t &r, bn_t &s, const bn_t &e, const bn_t &key_x, const bn_t &key_y,
+                                                  const bn_t &order, const bn_t &field)
+#endif
+#else 
+#ifndef GSV_SM2
     __device__ __forceinline__ int32_t sig_verify(const bn_t &r, bn_t &s, const bn_t &e, const bn_t &order, const bn_t &field,
                                                   bn_t &g_a)
+#else
+    __device__ __forceinline__ int32_t sig_verify(const bn_t &r, bn_t &s, const bn_t &e, const bn_t &order, const bn_t &field)
+#endif
 #endif
     {
         bn_t t, x1, y1, z1, x2, y2, z2;
@@ -458,11 +531,16 @@ class gsv_t {
         np0 = _env.bn2mont(z1, z1, field);
         _env.set(z2, z1);
 
+#ifndef GSV_SM2
         // mod(g_a, field);  // unnecessary
         _env.bn2mont(g_a, g_a, field);
 
         // s * generator + t * pkey
         fixed_point_mult(x1, y1, z1, s, field, g_a, np0);
+#else
+        // s * generator + t * pkey
+        fixed_point_mult(x1, y1, z1, s, field, np0);
+#endif
 
         __syncthreads();  // TODO: temp fix of wrong answer, need to test on different input
 
@@ -473,12 +551,24 @@ class gsv_t {
         _env.bn2mont(x2, x2, field);
         mod(y2, field);
         _env.bn2mont(y2, y2, field);
+#ifndef GSV_SM2
         point_mult_naf(x2, y2, z2, x2, y2, z2, t, field, g_a, np0);
 #else
+        point_mult_naf(x2, y2, z2, x2, y2, z2, t, field, np0);
+#endif
+#else
+#ifndef GSV_SM2
         fixed_point_mult2(x2, y2, z2, t, field, g_a, np0);
+#else
+        fixed_point_mult2(x2, y2, z2, t, field, np0);
+#endif
 #endif
 
+#ifndef GSV_SM2
         point_add_ipp(x1, y1, z1, x1, y1, z1, x2, y2, z2, field, g_a, np0);
+#else
+        point_add_ipp(x1, y1, z1, x1, y1, z1, x2, y2, z2, field, np0);
+#endif
 
         // avoid coordinate transformation by converting (r-e) to Jacobian
         mod_sub(t, r, e, order);
@@ -515,7 +605,10 @@ __global__ void kernel_sig_sign(cgbn_error_report_t *report, sign_ins_t *instanc
     typedef gsv_t<params> local_gsv_t;
 
     local_gsv_t gsv(cgbn_report_monitor, report, instance);
-    typename local_gsv_t::bn_t r, s, e, priv_key, order, field, g_a, k;
+    typename local_gsv_t::bn_t r, s, e, priv_key, order, field, k;
+#ifndef GSV_SM2
+    typename local_gsv_t::bn_t g_a;
+#endif
 
     cgbn_load(gsv._env, e, &(instances[instance].e));
     cgbn_load(gsv._env, priv_key, &(instances[instance].priv_key));
@@ -523,9 +616,13 @@ __global__ void kernel_sig_sign(cgbn_error_report_t *report, sign_ins_t *instanc
 
     cgbn_load(gsv._env, order, &(ec.order));
     cgbn_load(gsv._env, field, &(ec.field));
+#ifndef GSV_SM2
     cgbn_load(gsv._env, g_a, &(ec.g_a));
 
     gsv.sig_sign(r, s, e, priv_key, k, order, field, g_a);
+#else
+    gsv.sig_sign(r, s, e, priv_key, k, order, field);
+#endif
 
     cgbn_store(gsv._env, &(instances[instance].r), r);
     cgbn_store(gsv._env, &(instances[instance].s), s);
@@ -540,10 +637,12 @@ __global__ void kernel_sig_verify(cgbn_error_report_t *report, verify_ins_t *ins
     typedef gsv_t<params> local_gsv_t;
 
     local_gsv_t gsv(cgbn_report_monitor, report, instance);
+    typename local_gsv_t::bn_t r, s, e, order, field;
 #ifndef GSV_KNOWN_PKEY
-    typename local_gsv_t::bn_t r, s, e, key_x, key_y, order, field, g_a;
-#else
-    typename local_gsv_t::bn_t r, s, e, order, field, g_a;
+    typename local_gsv_t::bn_t key_x, key_y;
+#endif
+#ifndef GSV_SM2
+    typename local_gsv_t::bn_t g_a;
 #endif
 
     cgbn_load(gsv._env, r, &(instances[instance].r));
@@ -556,25 +655,35 @@ __global__ void kernel_sig_verify(cgbn_error_report_t *report, verify_ins_t *ins
 
     cgbn_load(gsv._env, order, &(ec.order));
     cgbn_load(gsv._env, field, &(ec.field));
+#ifndef GSV_SM2
     cgbn_load(gsv._env, g_a, &(ec.g_a));
+#endif
 
 #ifndef GSV_KNOWN_PKEY
+#ifndef GSV_SM2
     results[instance] = gsv.sig_verify(r, s, e, key_x, key_y, order, field, g_a);
 #else
+    results[instance] = gsv.sig_verify(r, s, e, key_x, key_y, order, field);
+#endif
+#else
+#ifndef GSV_SM2
     results[instance] = gsv.sig_verify(r, s, e, order, field, g_a);
+#else
+    results[instance] = gsv.sig_verify(r, s, e, order, field);
+#endif
 #endif
 }
 
 // global variables
 int TPB, TPI, IPB;
 ec_t sm2;
-cudaStream_t stream[NGPUS];
-sign_ins_t *d_sign_ins[NGPUS];
-verify_ins_t *d_verify_ins[NGPUS];
-int32_t *d_results[NGPUS];
-cgbn_error_report_t *report[NGPUS];
+cudaStream_t stream[MAX_NGPU];
+sign_ins_t *d_sign_ins[MAX_NGPU];
+verify_ins_t *d_verify_ins[MAX_NGPU];
+int32_t *d_results[MAX_NGPU];
+cgbn_error_report_t *report[MAX_NGPU];
 
-void GSV_sign_init(int device_id) {
+void GSV_sign_init(int num_gpus) {
     typedef gsv_params_t<GSV_TPI> params;
 
     TPB = (params::TPB == 0) ? 128 : params::TPB;  // default threads per block is 128
@@ -583,12 +692,14 @@ void GSV_sign_init(int device_id) {
 
     set_words(sm2.order._limbs, "FFFFFFFEFFFFFFFFFFFFFFFFFFFFFFFF7203DF6B21C6052B53BBF40939D54123", GSV_BITS / 32);
     set_words(sm2.field._limbs, "FFFFFFFEFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF00000000FFFFFFFFFFFFFFFF", GSV_BITS / 32);
+#ifndef GSV_SM2
     set_words(sm2.g_a._limbs, "FFFFFFFEFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF00000000FFFFFFFFFFFFFFFC", GSV_BITS / 32);
+#endif
 
-    omp_set_num_threads(NGPUS);
+    omp_set_num_threads(num_gpus);
 
 #pragma omp parallel for
-    for (int dev_id = 0; dev_id < NGPUS; dev_id++) {
+    for (int dev_id = 0; dev_id < num_gpus; dev_id++) {
         CUDA_CHECK(cudaSetDevice(dev_id));
         CUDA_CHECK(cudaStreamCreateWithFlags(&stream[dev_id], cudaStreamNonBlocking));
 
@@ -603,7 +714,7 @@ void GSV_sign_init(int device_id) {
     }
 }
 
-void GSV_sign_exec(int count, gsv_sign_t *sig) {
+void GSV_sign_exec(int num_gpus, int count, gsv_sign_t *sig) {
     typedef gsv_params_t<GSV_TPI> params;
 
     auto t_start = std::chrono::high_resolution_clock::now();
@@ -613,7 +724,7 @@ void GSV_sign_exec(int count, gsv_sign_t *sig) {
     // }
 
 #pragma omp parallel for
-    for (int dev_id = 0; dev_id < NGPUS; dev_id++) {
+    for (int dev_id = 0; dev_id < num_gpus; dev_id++) {
         CUDA_CHECK(cudaSetDevice(dev_id));
 
         CUDA_CHECK(
@@ -623,14 +734,14 @@ void GSV_sign_exec(int count, gsv_sign_t *sig) {
     auto k_start = std::chrono::high_resolution_clock::now();
 
 #pragma omp parallel for
-    for (int dev_id = 0; dev_id < NGPUS; dev_id++) {
+    for (int dev_id = 0; dev_id < num_gpus; dev_id++) {
         CUDA_CHECK(cudaSetDevice(dev_id));
 
         kernel_sig_sign<params><<<(count + IPB - 1) / IPB, TPB>>>(report[dev_id], d_sign_ins[dev_id], count, sm2);
     }
 
 #pragma omp parallel for
-    for (int dev_id = 0; dev_id < NGPUS; dev_id++) {
+    for (int dev_id = 0; dev_id < num_gpus; dev_id++) {
         CUDA_CHECK(cudaSetDevice(dev_id));
 
         CUDA_CHECK(cudaDeviceSynchronize());
@@ -639,14 +750,14 @@ void GSV_sign_exec(int count, gsv_sign_t *sig) {
 
     auto k_end = std::chrono::high_resolution_clock::now();
 
-    // #pragma omp parallel for
-    //     for (int dev_id = 0; dev_id < NGPUS; dev_id++) {
-    //         CUDA_CHECK(cudaSetDevice(dev_id));
+#pragma omp parallel for
+    for (int dev_id = 0; dev_id < num_gpus; dev_id++) {
+        CUDA_CHECK(cudaSetDevice(dev_id));
 
-    //         CUDA_CHECK(
-    //             cudaMemcpyAsync(sig, d_sign_ins[dev_id], sizeof(sign_ins_t) * count, cudaMemcpyDeviceToHost,
-    //             stream[dev_id]));
-    //     }
+        CUDA_CHECK(
+            cudaMemcpyAsync(sig, d_sign_ins[dev_id], sizeof(sign_ins_t) * count, cudaMemcpyDeviceToHost,
+            stream[dev_id]));
+    }
 
     auto t_end = std::chrono::high_resolution_clock::now();
 
@@ -654,12 +765,12 @@ void GSV_sign_exec(int count, gsv_sign_t *sig) {
     std::chrono::duration<double> k_diff = k_end - k_start;
 
     printf("Wall time: %lfs (Mem transfer %lfs), Speed: %lf sign/s (w/o mem transfer: %lfV/s)\n", t_diff.count(),
-           t_diff.count() - k_diff.count(), (double)count * NGPUS / t_diff.count(), (double)count * NGPUS / k_diff.count());
+           t_diff.count() - k_diff.count(), (double)count * num_gpus / t_diff.count(), (double)count * num_gpus / k_diff.count());
 }
 
-void GSV_sign_close() {
+void GSV_sign_close(int num_gpus) {
 #pragma omp parallel for
-    for (int dev_id = 0; dev_id < NGPUS; dev_id++) {
+    for (int dev_id = 0; dev_id < num_gpus; dev_id++) {
         CUDA_CHECK(cudaSetDevice(dev_id));
 
         CUDA_CHECK(cudaStreamDestroy(stream[dev_id]));
@@ -669,7 +780,7 @@ void GSV_sign_close() {
     }
 }
 
-void GSV_verify_init(int device_id) {
+void GSV_verify_init(int num_gpus) {
     typedef gsv_params_t<GSV_TPI> params;
 
     TPB = (params::TPB == 0) ? 128 : params::TPB;  // default threads per block is 128
@@ -678,12 +789,14 @@ void GSV_verify_init(int device_id) {
 
     set_words(sm2.order._limbs, "FFFFFFFEFFFFFFFFFFFFFFFFFFFFFFFF7203DF6B21C6052B53BBF40939D54123", GSV_BITS / 32);
     set_words(sm2.field._limbs, "FFFFFFFEFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF00000000FFFFFFFFFFFFFFFF", GSV_BITS / 32);
+#ifndef GSV_SM2
     set_words(sm2.g_a._limbs, "FFFFFFFEFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF00000000FFFFFFFFFFFFFFFC", GSV_BITS / 32);
+#endif
 
-    omp_set_num_threads(NGPUS);
+    omp_set_num_threads(num_gpus);
 
 #pragma omp parallel for
-    for (int dev_id = 0; dev_id < NGPUS; dev_id++) {
+    for (int dev_id = 0; dev_id < num_gpus; dev_id++) {
         CUDA_CHECK(cudaSetDevice(dev_id));
         CUDA_CHECK(cudaStreamCreateWithFlags(&stream[dev_id], cudaStreamNonBlocking));
 
@@ -708,13 +821,13 @@ void GSV_verify_init(int device_id) {
     }
 }
 
-void GSV_verify_exec(int count, gsv_verify_t *sig, int *results) {
+void GSV_verify_exec(int num_gpus, int count, gsv_verify_t *sig, int *results) {
     typedef gsv_params_t<GSV_TPI> params;
 
     auto t_start = std::chrono::high_resolution_clock::now();
 
 #pragma omp parallel for
-    for (int dev_id = 0; dev_id < NGPUS; dev_id++) {
+    for (int dev_id = 0; dev_id < num_gpus; dev_id++) {
         CUDA_CHECK(cudaSetDevice(dev_id));
 
         CUDA_CHECK(
@@ -724,7 +837,7 @@ void GSV_verify_exec(int count, gsv_verify_t *sig, int *results) {
     auto k_start = std::chrono::high_resolution_clock::now();
 
 #pragma omp parallel for
-    for (int dev_id = 0; dev_id < NGPUS; dev_id++) {
+    for (int dev_id = 0; dev_id < num_gpus; dev_id++) {
         CUDA_CHECK(cudaSetDevice(dev_id));
 
         kernel_sig_verify<params>
@@ -732,7 +845,7 @@ void GSV_verify_exec(int count, gsv_verify_t *sig, int *results) {
     }
 
 #pragma omp parallel for
-    for (int dev_id = 0; dev_id < NGPUS; dev_id++) {
+    for (int dev_id = 0; dev_id < num_gpus; dev_id++) {
         CUDA_CHECK(cudaSetDevice(dev_id));
 
         CUDA_CHECK(cudaDeviceSynchronize());
@@ -741,14 +854,14 @@ void GSV_verify_exec(int count, gsv_verify_t *sig, int *results) {
 
     auto k_end = std::chrono::high_resolution_clock::now();
 
-    // #pragma omp parallel for
-    //     for (int dev_id = 0; dev_id < NGPUS; dev_id++) {
-    //         CUDA_CHECK(cudaSetDevice(dev_id));
+#pragma omp parallel for
+    for (int dev_id = 0; dev_id < num_gpus; dev_id++) {
+        CUDA_CHECK(cudaSetDevice(dev_id));
 
-    //         CUDA_CHECK(
-    //             cudaMemcpyAsync(results, d_results[dev_id], sizeof(int32_t) * count, cudaMemcpyDeviceToHost,
-    //             stream[dev_id]));
-    //     }
+        CUDA_CHECK(
+            cudaMemcpyAsync(results, d_results[dev_id], sizeof(int32_t) * count, cudaMemcpyDeviceToHost,
+            stream[dev_id]));
+    }
 
     auto t_end = std::chrono::high_resolution_clock::now();
 
@@ -756,12 +869,12 @@ void GSV_verify_exec(int count, gsv_verify_t *sig, int *results) {
     std::chrono::duration<double> k_diff = k_end - k_start;
 
     printf("Wall time: %lfs (Mem transfer %lfs), Speed: %lf verify/s (w/o mem transfer: %lfV/s)\n", t_diff.count(),
-           t_diff.count() - k_diff.count(), (double)count * NGPUS / t_diff.count(), (double)count * NGPUS / k_diff.count());
+           t_diff.count() - k_diff.count(), (double)count * num_gpus / t_diff.count(), (double)count * num_gpus / k_diff.count());
 }
 
-void GSV_verify_close() {
+void GSV_verify_close(int num_gpus) {
 #pragma omp parallel for
-    for (int dev_id = 0; dev_id < NGPUS; dev_id++) {
+    for (int dev_id = 0; dev_id < num_gpus; dev_id++) {
         CUDA_CHECK(cudaSetDevice(dev_id));
 
         CUDA_CHECK(cudaStreamDestroy(stream[dev_id]));

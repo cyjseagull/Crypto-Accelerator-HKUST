@@ -41,7 +41,7 @@ void print_bn(uint32_t *x, uint32_t cnt) {
     printf("\n");
 }
 
-void test_sign(int count) {
+void test_sign(int num_gpus, int count) {
     gsv_sign_t *sig;
 
     sig = (gsv_sign_t *)malloc(sizeof(gsv_sign_t) * count);
@@ -52,7 +52,7 @@ void test_sign(int count) {
         hex2bn(sig[i].k._limbs, "E11F5909F947D5BE08C84A22CE9F7C338F7CF4A5B941B9268025495D7D433071", GSV_BITS / 32);
     }
 
-    GSV_sign_exec(count, sig);
+    GSV_sign_exec(num_gpus, count, sig);
 
     // for (int i = 0; i < 1; i++) {
     //     print_bn(sig[i].r._limbs, GSV_BITS / 32);
@@ -60,7 +60,7 @@ void test_sign(int count) {
     // }
 }
 
-void test_verify(int count) {
+void test_verify(int num_gpus, int count) {
     gsv_verify_t *sig;
     int *results;
 
@@ -77,7 +77,7 @@ void test_verify(int count) {
 #endif
     }
 
-    GSV_verify_exec(count, sig, results);
+    GSV_verify_exec(num_gpus, count, sig, results);
 
     for (int i = 0; i < count; i++) {
         if (results[i] != 0) {
@@ -88,25 +88,33 @@ void test_verify(int count) {
 }
 
 int main(int argc, char **argv) {
-    // Signature generation benchmark
-    GSV_sign_init();
+    for (int num_gpus = 1; num_gpus <= 8; num_gpus++) {
+        printf("#GPU %d\n", num_gpus);
 
-    for (int i = 256; i <= 1048576; i *= 2) {
-        printf("#instances: %d\n", i);
-        test_sign(i);
+        // Signature generation benchmark
+        GSV_sign_init(num_gpus);
+
+        for (int i = 256; i <= 8388608; i *= 2) {
+            printf("#instances: %d\n", i);
+            test_sign(num_gpus, i);
+            test_sign(num_gpus, i);
+            test_sign(num_gpus, i);
+        }
+
+        GSV_sign_close(num_gpus);
+
+        // Signature verification benchmark
+        GSV_verify_init(num_gpus);
+
+        for (int i = 256; i <= 1048576; i *= 2) {
+            printf("#instances: %d\n", i);
+            test_verify(num_gpus, i);
+            test_verify(num_gpus, i);
+            test_verify(num_gpus, i);
+        }
+
+        GSV_verify_close(num_gpus);
     }
-
-    GSV_sign_close();
-
-    // Signature verification benchmark
-    GSV_verify_init();
-
-    for (int i = 256; i <= 1048576; i *= 2) {
-        printf("#instances: %d\n", i);
-        test_verify(i);
-    }
-
-    GSV_verify_close();
 
     return 0;
 }

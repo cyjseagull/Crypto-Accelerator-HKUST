@@ -3,7 +3,7 @@
 
 #include <cstdint>
 
-#define GSV_TPI 16
+#define GSV_TPI 4
 
 // #define GSV_256BIT
 
@@ -37,16 +37,16 @@ typedef struct {
 #endif
 } gsv_verify_t;
 
-void GSV_sign_init(int device_id = 0);
+void GSV_sign_init(int num_gpus);
 
-void GSV_sign_exec(int count, gsv_sign_t *sig);
+void GSV_sign_exec(int num_gpus, int count, gsv_sign_t *sig);
 
-void GSV_sign_close();
+void GSV_sign_close(int num_gpus);
 
-void GSV_verify_init(int device_id = 0);
+void GSV_verify_init(int num_gpus);
 
-void GSV_verify_exec(int count, gsv_verify_t *sig, int *results);
+void GSV_verify_exec(int num_gpus, int count, gsv_verify_t *sig, int *results);
 
-void GSV_verify_close();
+void GSV_verify_close(int num_gpus);
 
 #endif  // _GSV_WRAPPER_H_
